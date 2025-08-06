@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import type { SymbolInfo } from '../src/types';
 
 export interface ExtractedSymbols {
-    language: string;
+    lang?: string; // Old field name for compatibility
+    language?: string; // New field name
     directory: string;
     symbols: SymbolInfo[];
 }
@@ -19,7 +20,14 @@ export function runLSPCLI(directory: string, language: string, outputFile: strin
 
 export function readOutput(outputFile: string): ExtractedSymbols {
     const content = readFileSync(outputFile, 'utf-8');
-    return JSON.parse(content);
+    const data = JSON.parse(content);
+
+    // Normalize language field (lang -> language)
+    if (data.lang && !data.language) {
+        data.language = data.lang;
+    }
+
+    return data;
 }
 
 export function findSymbol(symbols: SymbolInfo[], name: string, kind?: string): SymbolInfo | undefined {

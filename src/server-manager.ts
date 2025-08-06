@@ -56,6 +56,8 @@ export class ServerManager {
                 return existsSync(join(serverDir, 'node_modules', '.bin', 'typescript-language-server'));
             case 'dart':
                 return existsSync(join(serverDir, 'dart-language-server'));
+            case 'go':
+                return existsSync(join(serverDir, 'gopls'));
             default:
                 return false;
         }
@@ -160,6 +162,26 @@ exec dart language-server "$@"
                     }
                 };
 
+            case 'go':
+                return {
+                    downloadUrl: '',
+                    command: ['gopls'],
+                    installScript: async (targetDir: string) => {
+                        // Install gopls using go install
+                        await execAsync('go install golang.org/x/tools/gopls@latest');
+                        // Find the installed gopls binary
+                        const gopath = process.env.GOPATH || join(homedir(), 'go');
+                        const goplsPath = join(gopath, 'bin', 'gopls');
+                        // Create a symlink or copy to the target directory
+                        const targetPath = join(targetDir, 'gopls');
+                        await execAsync(`cp "${goplsPath}" "${targetPath}"`);
+                        // Make it executable
+                        if (process.platform !== 'win32') {
+                            await execAsync(`chmod +x "${targetPath}"`);
+                        }
+                    }
+                };
+
             default:
                 throw new Error(`Unsupported language: ${language}`);
         }
@@ -244,6 +266,9 @@ exec dart language-server "$@"
 
             case 'dart':
                 return [join(serverDir, 'dart-language-server')];
+
+            case 'go':
+                return [join(serverDir, 'gopls')];
 
             default:
                 throw new Error(`Unsupported language: ${language}`);

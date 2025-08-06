@@ -39,6 +39,7 @@ lsp-cli <directory> <language> <output-file>
 - `haxe` - Haxe (requires Haxe compiler)
 - `typescript` - TypeScript (requires Node.js)
 - `dart` - Dart (requires Dart SDK)
+- `go` - Go (requires Go toolchain)
 
 ### Example
 
@@ -136,6 +137,7 @@ Each language requires its toolchain installed:
 - Haxe: Haxe compiler
 - TypeScript: Node.js
 - Dart: Dart SDK
+- Go: Go toolchain
 
 ### Project Files
 For best results, projects should have proper configuration:
@@ -145,6 +147,7 @@ For best results, projects should have proper configuration:
 - Haxe: `build.hxml` or `haxe.json`
 - TypeScript: `tsconfig.json`
 - Dart: `pubspec.yaml`
+- Go: `go.mod`
 
 ## LSP Servers
 

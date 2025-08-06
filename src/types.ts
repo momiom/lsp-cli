@@ -1,4 +1,4 @@
-export type SupportedLanguage = 'java' | 'cpp' | 'c' | 'csharp' | 'haxe' | 'typescript' | 'dart';
+export type SupportedLanguage = 'java' | 'cpp' | 'c' | 'csharp' | 'haxe' | 'typescript' | 'dart' | 'go';
 
 export interface Position {
     line: number;

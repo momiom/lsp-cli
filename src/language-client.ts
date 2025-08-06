@@ -780,6 +780,52 @@ export class LanguageClient {
         // Extract type parameters from a class/interface declaration
         // e.g., "class Foo<T, U extends Bar>" -> ["T", "U"]
 
+        // Handle Go generics syntax specially
+        if (this.language === 'go') {
+            // Go uses square brackets: type Name[T any, U comparable] ...
+
+            // KNOWN LIMITATION: Go LSP (gopls) sometimes combines multiple type definitions
+            // into a single preview string. For example:
+            // "type FunctionType func(int) string type HandlerFunc[T any, R any] func(T) (R, error)"
+            // This causes incorrect type parameter extraction for non-generic types.
+            // Ideally, each type definition should be a separate symbol, but we work with
+            // what gopls provides. We try to match only the first type definition.
+
+            // Extract only the first type definition to avoid cross-contamination
+            const firstTypeMatch = declaration.match(/^type\s+\w+[^;]*?(?=\s*type\s+\w+|$)/);
+            const declToCheck = firstTypeMatch ? firstTypeMatch[0] : declaration;
+
+            const goMatch = declToCheck.match(/type\s+\w+\[([^\]]+)\]/);
+            if (goMatch) {
+                const typeParamsStr = goMatch[1];
+                const typeParams: string[] = [];
+
+                // Split by comma, but handle nested types
+                let current = '';
+                let depth = 0;
+
+                for (const char of typeParamsStr) {
+                    if (char === '[') depth++;
+                    else if (char === ']') depth--;
+
+                    if (char === ',' && depth === 0) {
+                        const param = this.extractGoTypeParam(current.trim());
+                        if (param) typeParams.push(param);
+                        current = '';
+                    } else {
+                        current += char;
+                    }
+                }
+
+                // Don't forget the last parameter
+                const lastParam = this.extractGoTypeParam(current.trim());
+                if (lastParam) typeParams.push(lastParam);
+
+                return typeParams.length > 0 ? typeParams : undefined;
+            }
+            return undefined;
+        }
+
         // Handle C++ template syntax specially
         if (this.language === 'cpp' || this.language === 'c') {
             // For C++, look for template<...> before the class/struct
@@ -914,6 +960,25 @@ export class LanguageClient {
         return name;
     }
 
+    private extractGoTypeParam(param: string): string | null {
+        // Extract Go type parameter name
+        // e.g., "T any", "U comparable", "T ~float32 | ~float64"
+
+        // Split by whitespace to get the parameter name (first part)
+        const parts = param.trim().split(/\s+/);
+        if (parts.length === 0) return null;
+
+        // The first part is the parameter name
+        const name = parts[0];
+
+        // Make sure it's a valid identifier
+        if (name && /^[A-Za-z_]\w*$/.test(name)) {
+            return name;
+        }
+
+        return null;
+    }
+
     private parseTypeArguments(typeWithGenerics: string): { name: string; typeArguments?: string[] } {
         // Parse a type with its generic arguments
         // e.g., "Foo<T, Bar<X>>" -> { name: "Foo", typeArguments: ["T", "Bar<X>"] }
@@ -956,6 +1021,14 @@ export class LanguageClient {
             return undefined;
         }
 
+        // KNOWN LIMITATION: Go LSP (gopls) doesn't provide type arguments for embedded structs.
+        // For example, when SimpleChild embeds BaseClass[string], gopls only reports
+        // that SimpleChild implements BaseInterface (which BaseClass implements), but
+        // doesn't provide the type argument information. This is a limitation of the
+        // current gopls implementation. Ideally, we would parse the struct definition
+        // to extract embedded fields and their type arguments, but this would require
+        // full Go syntax parsing which is beyond the scope of an LSP client.
+
         switch (this.language) {
             case 'java':
                 return this.parseJavaSupertypesFromPreview(preview);
@@ -970,6 +1043,8 @@ export class LanguageClient {
                 return this.parseDartSupertypesFromPreview(preview);
             case 'csharp':
                 return this.parseCSharpSupertypesFromPreview(preview);
+            case 'go':
+                return this.parseGoSupertypesFromPreview(preview);
             default:
                 return undefined;
         }
@@ -1239,6 +1314,43 @@ export class LanguageClient {
         return supertypes.length > 0 ? supertypes : undefined;
     }
 
+    private parseGoSupertypesFromPreview(preview: string): Supertype[] | undefined {
+        const supertypes: Supertype[] = [];
+
+        // Remove comments from the preview
+        const cleanedPreview = preview
+            .replace(/\/\*[\s\S]*?\*\//g, ' ')
+            .replace(/\/\/.*$/gm, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        // For structs, look for embedded types (anonymous fields)
+        if (cleanedPreview.includes('struct {')) {
+            // Extract the struct body
+            const structBodyMatch = cleanedPreview.match(/struct\s*{([^}]*)/);
+            if (structBodyMatch) {
+                const body = structBodyMatch[1];
+                // Look for lines that are just type names (embedded types)
+                const lines = body
+                    .split(/[;\n]/)
+                    .map((line) => line.trim())
+                    .filter((line) => line);
+                for (const line of lines) {
+                    // Skip if it has a field name (contains space or tab before type)
+                    if (!line.includes(' ') && !line.includes('\t') && line.match(/^[A-Z]\w*/)) {
+                        // This is likely an embedded type
+                        supertypes.push({ name: line });
+                    }
+                }
+            }
+        }
+
+        // For interfaces, Go doesn't have explicit inheritance in the preview
+        // Interfaces in Go are satisfied implicitly, not declared
+
+        return supertypes.length > 0 ? supertypes : undefined;
+    }
+
     private cleanSymbolName(name: string): string {
         // For Java, strip generic type parameters from class/interface names
         if (this.language === 'java') {
@@ -1253,6 +1365,17 @@ export class LanguageClient {
 
     private isTypeSymbol(symbol: DocumentSymbol): boolean {
         const typeKinds: SymbolKind[] = [SymbolKind.Class, SymbolKind.Interface, SymbolKind.Enum, SymbolKind.Struct];
+
+        // KNOWN LIMITATION: Go LSP (gopls) reports type aliases inconsistently:
+        // - Type aliases for primitive types (e.g., type MyInt int) are reported as 'Class'
+        // - Type aliases for function types (e.g., type Handler func()) are reported as 'Function'
+        // - Type aliases for composite types (e.g., type MyMap map[string]int) are reported as 'Class'
+        // Ideally, all type aliases should be reported with a consistent kind, but we adapt
+        // to gopls's current behavior by checking multiple kinds.
+        if (this.language === 'go' && (symbol.kind === SymbolKind.Class || symbol.kind === SymbolKind.Function)) {
+            return true;
+        }
+
         return typeKinds.includes(symbol.kind);
     }
 
@@ -1336,7 +1459,8 @@ export class LanguageClient {
             csharp: 'csharp',
             haxe: 'haxe',
             typescript: 'typescript',
-            dart: 'dart'
+            dart: 'dart',
+            go: 'go'
         };
         return languageMap[this.language];
     }
@@ -1349,7 +1473,8 @@ export class LanguageClient {
             csharp: ['.cs'],
             haxe: ['.hx'],
             dart: ['.dart'],
-            typescript: ['.ts', '.tsx']
+            typescript: ['.ts', '.tsx'],
+            go: ['.go']
         };
 
         const extensions = extensionMap[this.language];
